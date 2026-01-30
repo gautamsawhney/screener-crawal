@@ -1,14 +1,16 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
-import { NextResponse } from "next/server";
+import { ALLOWED_INDUSTRIES, getCategoryFromIndustry } from "../../config/sectors";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300; // 5 minutes for long operations
 
 const SCREEN_URL = "https://www.screener.in/screens/3193493/nse-top-stocks/";
+const SCREENER_COMPANY_BASE = "https://www.screener.in/company";
 const PAGE_LIMIT = 100; // safety guard
 const FETCH_DELAY_MS = 800; // small delay to avoid rate limits
 const RETRIES_PER_PAGE = 3;
-const YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart";
+const YAHOO_CHART_BASE = "https://query1.finance.yahoo.com/v8/finance/chart";
 const ATH_THRESHOLD = 0.7; // within 30% of all-time high
 
 const normalizeSymbol = (raw: string | undefined | null) => {
@@ -104,7 +106,7 @@ const fetchPageHtml = async (page: number) => {
 };
 
 const fetchMetrics = async (symbol: string) => {
-  const url = `${YAHOO_BASE}/${encodeURIComponent(symbol)}.NS`;
+  const url = `${YAHOO_CHART_BASE}/${encodeURIComponent(symbol)}.NS`;
   const params = {
     range: "3y",
     interval: "1d"
@@ -148,78 +150,193 @@ const fetchMetrics = async (symbol: string) => {
   return { symbol, currentPrice, sma200, ath, passes };
 };
 
-const applyFilters = async (symbols: string[]) => {
-  const filtered: string[] = [];
+type SectorInfo = {
+  symbol: string;
+  sector: string | null;
+  industry: string | null;
+  category: string | null;
+  name: string | null;
+};
 
-  for (const symbol of symbols) {
+const filterBySector = (sectorInfos: SectorInfo[]): SectorInfo[] => {
+  return sectorInfos.filter(info => {
+    if (!info.industry) return false;
+    return ALLOWED_INDUSTRIES.includes(info.industry as typeof ALLOWED_INDUSTRIES[number]);
+  });
+};
+
+const fetchSectorFromScreener = async (symbol: string): Promise<SectorInfo> => {
+  try {
+    const url = `${SCREENER_COMPANY_BASE}/${symbol}/`;
+    const response = await axios.get(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "text/html",
+        Referer: SCREEN_URL
+      }
+    });
+
+    const $ = cheerio.load(response.data);
+
+    // Get company name from title
+    const name = $("h1").first().text().trim() || null;
+
+    // Get sector and industry from the company info section
+    const sector = $('a[title="Sector"]').text().trim() || null;
+    const industry = $('a[title="Industry"]').text().trim() || null;
+
+    return {
+      symbol,
+      sector,
+      industry,
+      category: industry ? getCategoryFromIndustry(industry) : (sector ? getCategoryFromIndustry(sector) : null),
+      name,
+    };
+  } catch {
+    return {
+      symbol,
+      sector: null,
+      industry: null,
+      category: null,
+      name: null,
+    };
+  }
+};
+
+const applyFiltersWithSectorInfo = async (
+  symbols: string[],
+  onProgress?: (msg: string, current: number, total: number) => void
+): Promise<{ filtered: string[]; sectorFiltered: SectorInfo[] }> => {
+  const filtered: string[] = [];
+  const total = symbols.length;
+
+  for (let i = 0; i < symbols.length; i++) {
+    const symbol = symbols[i];
     try {
       const result = await fetchMetrics(symbol);
       if (result.passes) {
         filtered.push(symbol);
+        onProgress?.(`✓ ${symbol} passed`, i + 1, total);
+      } else {
+        onProgress?.(`✗ ${symbol} failed`, i + 1, total);
       }
       await sleep(250);
-    } catch (err) {
-      // Skip symbols with missing data or errors.
+    } catch {
+      onProgress?.(`⚠ ${symbol} skipped`, i + 1, total);
       continue;
     }
   }
 
-  return filtered;
+  // Now fetch sector info from Screener.in
+  onProgress?.(`Fetching sector info for ${filtered.length} stocks...`, 0, filtered.length);
+
+  const sectorResults: SectorInfo[] = [];
+  for (let i = 0; i < filtered.length; i++) {
+    const symbol = filtered[i];
+    onProgress?.(`Fetching sector: ${symbol} (${i + 1}/${filtered.length})`, i + 1, filtered.length);
+
+    const sectorInfo = await fetchSectorFromScreener(symbol);
+    sectorResults.push(sectorInfo);
+
+    await sleep(300); // Rate limit for Screener.in
+  }
+
+  const sectorFiltered = filterBySector(sectorResults);
+  return { filtered, sectorFiltered };
 };
 
 export async function GET(request: Request) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const withFilters = searchParams.get("filters") === "true";
+  const { searchParams } = new URL(request.url);
+  const withFilters = searchParams.get("filters") === "true";
 
-    const symbols = new Set<string>();
-    let page = 1;
-    let hasNext = true;
+  const encoder = new TextEncoder();
+  const stream = new TransformStream();
+  const writer = stream.writable.getWriter();
 
-    while (hasNext && page <= PAGE_LIMIT) {
-      const html = await fetchPageHtml(page);
-      const { symbols: pageSymbols, hasNext: pageHasNext } = parsePage(html);
-      pageSymbols.forEach((s) => symbols.add(s));
+  const sendEvent = async (event: string, data: unknown) => {
+    await writer.write(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+  };
 
-      hasNext = pageHasNext && pageSymbols.length > 0;
-      page += 1;
-      if (hasNext) {
-        await sleep(FETCH_DELAY_MS);
+  // Process in background
+  (async () => {
+    try {
+      await sendEvent("progress", { stage: "screener", message: "Fetching stocks from Screener...", current: 0, total: 0 });
+
+      const symbols = new Set<string>();
+      let page = 1;
+      let hasNext = true;
+
+      while (hasNext && page <= PAGE_LIMIT) {
+        await sendEvent("progress", { stage: "screener", message: `Fetching page ${page}...`, current: page, total: 0 });
+
+        const html = await fetchPageHtml(page);
+        const { symbols: pageSymbols, hasNext: pageHasNext } = parsePage(html);
+        pageSymbols.forEach((s) => symbols.add(s));
+
+        hasNext = pageHasNext && pageSymbols.length > 0;
+        page += 1;
+        if (hasNext) {
+          await sleep(FETCH_DELAY_MS);
+        }
       }
+
+      const rawSymbols = Array.from(symbols);
+      const formatted = rawSymbols.map((symbol) => `NSE:${symbol}`);
+      const batches = splitIntoBatches(formatted);
+
+      await sendEvent("progress", { stage: "screener", message: `Found ${rawSymbols.length} symbols`, current: page - 1, total: page - 1 });
+
+      let filteredFormatted: string[] | undefined;
+      let filteredBatches: string[] | undefined;
+      let sectorFiltered: SectorInfo[] | undefined;
+
+      if (withFilters) {
+        await sendEvent("progress", { stage: "filter", message: `Starting filter for ${rawSymbols.length} symbols...`, current: 0, total: rawSymbols.length });
+
+        const result = await applyFiltersWithSectorInfo(rawSymbols, (msg, current, total) => {
+          sendEvent("progress", { stage: "filter", message: msg, current, total });
+        });
+
+        filteredFormatted = result.filtered.map((s) => `NSE:${s}`);
+        filteredBatches = splitIntoBatches(filteredFormatted);
+        sectorFiltered = result.sectorFiltered;
+
+        await sendEvent("progress", { stage: "complete", message: `Done! ${result.filtered.length} passed filters, ${sectorFiltered.length} in target sectors`, current: rawSymbols.length, total: rawSymbols.length });
+      }
+
+      await sendEvent("result", {
+        source: SCREEN_URL,
+        total: formatted.length,
+        batches,
+        filtered: filteredFormatted
+          ? {
+              total: filteredFormatted.length,
+              batches: filteredBatches
+            }
+          : undefined,
+        sectorFiltered: sectorFiltered
+          ? {
+              total: sectorFiltered.length,
+              stocks: sectorFiltered,
+              batches: splitIntoBatches(sectorFiltered.map(s => `NSE:${s.symbol}`))
+            }
+          : undefined
+      });
+
+    } catch (error) {
+      console.error("Failed to fetch symbols", error);
+      await sendEvent("error", { message: "Unable to fetch symbols right now. Screener may be rate limiting; please retry in a moment." });
+    } finally {
+      await writer.close();
     }
+  })();
 
-    const rawSymbols = Array.from(symbols);
-    const formatted = rawSymbols.map((symbol) => `NSE:${symbol}`);
-    const batches = splitIntoBatches(formatted);
-
-    let filteredFormatted: string[] | undefined;
-    let filteredBatches: string[] | undefined;
-
-    if (withFilters) {
-      const passingRaw = await applyFilters(rawSymbols);
-      filteredFormatted = passingRaw.map((s) => `NSE:${s}`);
-      filteredBatches = splitIntoBatches(filteredFormatted);
-    }
-
-    return NextResponse.json({
-      source: SCREEN_URL,
-      total: formatted.length,
-      batches,
-      filtered: filteredFormatted
-        ? {
-            total: filteredFormatted.length,
-            batches: filteredBatches
-          }
-        : undefined
-    });
-  } catch (error) {
-    console.error("Failed to fetch symbols", error);
-    return NextResponse.json(
-      {
-        error:
-          "Unable to fetch symbols right now. Screener may be rate limiting; please retry in a moment."
-      },
-      { status: 500 }
-    );
-  }
+  return new Response(stream.readable, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+    },
+  });
 }
