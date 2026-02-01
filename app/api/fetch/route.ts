@@ -11,7 +11,7 @@ const PAGE_LIMIT = 100; // safety guard
 const FETCH_DELAY_MS = 800; // small delay to avoid rate limits
 const RETRIES_PER_PAGE = 3;
 const YAHOO_CHART_BASE = "https://query1.finance.yahoo.com/v8/finance/chart";
-const ATH_THRESHOLD = 0.7; // within 30% of all-time high
+const ATH_THRESHOLD = 0.5; // within 50% of all-time high
 
 const normalizeSymbol = (raw: string | undefined | null) => {
   if (!raw) return null;
