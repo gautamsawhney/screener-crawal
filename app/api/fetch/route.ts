@@ -207,7 +207,7 @@ const fetchSectorFromScreener = async (symbol: string): Promise<SectorInfo> => {
 const applyFiltersWithSectorInfo = async (
   symbols: string[],
   onProgress?: (msg: string, current: number, total: number) => void
-): Promise<{ filtered: string[]; sectorFiltered: SectorInfo[] }> => {
+): Promise<{ filtered: string[]; allSectorInfo: SectorInfo[]; sectorFiltered: SectorInfo[] }> => {
   const filtered: string[] = [];
   const total = symbols.length;
 
@@ -243,7 +243,7 @@ const applyFiltersWithSectorInfo = async (
   }
 
   const sectorFiltered = filterBySector(sectorResults);
-  return { filtered, sectorFiltered };
+  return { filtered, allSectorInfo: sectorResults, sectorFiltered };
 };
 
 export async function GET(request: Request) {
@@ -289,6 +289,7 @@ export async function GET(request: Request) {
 
       let filteredFormatted: string[] | undefined;
       let filteredBatches: string[] | undefined;
+      let allSectorInfo: SectorInfo[] | undefined;
       let sectorFiltered: SectorInfo[] | undefined;
 
       if (withFilters) {
@@ -300,6 +301,7 @@ export async function GET(request: Request) {
 
         filteredFormatted = result.filtered.map((s) => `NSE:${s}`);
         filteredBatches = splitIntoBatches(filteredFormatted);
+        allSectorInfo = result.allSectorInfo;
         sectorFiltered = result.sectorFiltered;
 
         await sendEvent("progress", { stage: "complete", message: `Done! ${result.filtered.length} passed filters, ${sectorFiltered.length} in target sectors`, current: rawSymbols.length, total: rawSymbols.length });
@@ -312,7 +314,8 @@ export async function GET(request: Request) {
         filtered: filteredFormatted
           ? {
               total: filteredFormatted.length,
-              batches: filteredBatches
+              batches: filteredBatches,
+              stocks: allSectorInfo
             }
           : undefined,
         sectorFiltered: sectorFiltered

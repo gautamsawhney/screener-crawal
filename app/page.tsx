@@ -17,6 +17,7 @@ type FetchResponse = {
   filtered?: {
     batches: string[];
     total: number;
+    stocks?: SectorStock[];
   };
   sectorFiltered?: {
     total: number;
@@ -208,13 +209,70 @@ export default function HomePage() {
             </div>
 
             {data.filtered && (
-              <div className="mt-4 space-y-4">
-                <div className="flex flex-wrap items-center gap-3 text-sm text-slate-700">
-                  <span className="font-semibold">Filtered (200DMA &amp; ≤30% off ATH)</span>
-                  <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs text-emerald-700">
-                    {data.filtered.total} symbols
-                  </span>
+              <div className="mt-8 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <span className="text-lg font-semibold text-slate-900">
+                      Step 1: Filtered Stocks (200DMA &amp; ATH)
+                    </span>
+                    <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs text-emerald-700">
+                      {data.filtered.total} stocks
+                    </span>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      const allSymbols = data.filtered!.batches.join(",");
+                      await navigator.clipboard.writeText(allSymbols);
+                      setCopiedIndex(1999);
+                      setTimeout(() => setCopiedIndex(null), 1500);
+                    }}
+                    className="text-xs font-semibold text-indigo-600 hover:text-indigo-700"
+                  >
+                    {copiedIndex === 1999 ? "Copied All" : "Copy All Symbols"}
+                  </button>
                 </div>
+
+                {data.filtered.stocks && data.filtered.stocks.length > 0 && (
+                  <div className="overflow-x-auto rounded-lg border border-slate-200">
+                    <table className="min-w-full divide-y divide-slate-200">
+                      <thead className="bg-slate-50">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600">
+                            Symbol
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600">
+                            Name
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600">
+                            Sector
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600">
+                            Industry
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {data.filtered.stocks.map((stock, index) => (
+                          <tr key={index} className="hover:bg-slate-50">
+                            <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-indigo-600">
+                              {stock.symbol}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-slate-700">
+                              {stock.name || "-"}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-slate-500">
+                              {stock.sector || "-"}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-slate-500">
+                              {stock.industry || "-"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
                 <div className="grid gap-6 md:grid-cols-2">
                   {data.filtered.batches.map((batch, index) => (
                     <div key={index} className="flex flex-col gap-2">
@@ -230,7 +288,7 @@ export default function HomePage() {
                         <button
                           onClick={async () => {
                             await navigator.clipboard.writeText(batch);
-                            setCopiedIndex(index + 1000); // avoid collision with main list
+                            setCopiedIndex(index + 1000);
                             setTimeout(() => setCopiedIndex(null), 1500);
                           }}
                           className="text-xs font-semibold text-indigo-600 hover:text-indigo-700"
@@ -254,7 +312,7 @@ export default function HomePage() {
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
                     <span className="text-lg font-semibold text-slate-900">
-                      Sector Filtered Stocks
+                      Step 2: Sector Filtered Stocks
                     </span>
                     <span className="rounded-full bg-amber-50 px-3 py-1 text-xs text-amber-700">
                       {data.sectorFiltered.total} stocks
