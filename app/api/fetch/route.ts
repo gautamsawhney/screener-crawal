@@ -135,6 +135,7 @@ const fetchMetrics = async (symbol: string) => {
   }
 
   const currentPrice = closes[closes.length - 1];
+  const previousClose = closes.length > 1 ? closes[closes.length - 2] : null;
   const ath = closes.reduce((max, val) => (val > max ? val : max), closes[0]);
 
   const last200 = closes.slice(-200);
@@ -147,7 +148,12 @@ const fetchMetrics = async (symbol: string) => {
   const passes =
     currentPrice > sma200 && currentPrice >= ath * ATH_THRESHOLD;
 
-  return { symbol, currentPrice, sma200, ath, passes };
+  const dailyChangePct =
+    previousClose && previousClose !== 0
+      ? ((currentPrice - previousClose) / previousClose) * 100
+      : null;
+
+  return { symbol, currentPrice, sma200, ath, passes, dailyChangePct };
 };
 
 type SectorInfo = {
@@ -156,6 +162,7 @@ type SectorInfo = {
   industry: string | null;
   category: string | null;
   name: string | null;
+  dailyChangePct: number | null;
 };
 
 const filterBySector = (sectorInfos: SectorInfo[]): SectorInfo[] => {
@@ -165,7 +172,7 @@ const filterBySector = (sectorInfos: SectorInfo[]): SectorInfo[] => {
   });
 };
 
-const fetchSectorFromScreener = async (symbol: string): Promise<SectorInfo> => {
+const fetchSectorFromScreener = async (symbol: string, dailyChangePct: number | null): Promise<SectorInfo> => {
   try {
     const url = `${SCREENER_COMPANY_BASE}/${symbol}/`;
     const response = await axios.get(url, {
@@ -192,6 +199,7 @@ const fetchSectorFromScreener = async (symbol: string): Promise<SectorInfo> => {
       industry,
       category: industry ? getCategoryFromIndustry(industry) : (sector ? getCategoryFromIndustry(sector) : null),
       name,
+      dailyChangePct,
     };
   } catch {
     return {
@@ -200,6 +208,7 @@ const fetchSectorFromScreener = async (symbol: string): Promise<SectorInfo> => {
       industry: null,
       category: null,
       name: null,
+      dailyChangePct,
     };
   }
 };
@@ -209,6 +218,7 @@ const applyFiltersWithSectorInfo = async (
   onProgress?: (msg: string, current: number, total: number) => void
 ): Promise<{ filtered: string[]; allSectorInfo: SectorInfo[]; sectorFiltered: SectorInfo[] }> => {
   const filtered: string[] = [];
+  const dailyChangeBySymbol = new Map<string, number | null>();
   const total = symbols.length;
 
   for (let i = 0; i < symbols.length; i++) {
@@ -217,6 +227,7 @@ const applyFiltersWithSectorInfo = async (
       const result = await fetchMetrics(symbol);
       if (result.passes) {
         filtered.push(symbol);
+        dailyChangeBySymbol.set(symbol, result.dailyChangePct);
         onProgress?.(`✓ ${symbol} passed`, i + 1, total);
       } else {
         onProgress?.(`✗ ${symbol} failed`, i + 1, total);
@@ -236,7 +247,7 @@ const applyFiltersWithSectorInfo = async (
     const symbol = filtered[i];
     onProgress?.(`Fetching sector: ${symbol} (${i + 1}/${filtered.length})`, i + 1, filtered.length);
 
-    const sectorInfo = await fetchSectorFromScreener(symbol);
+    const sectorInfo = await fetchSectorFromScreener(symbol, dailyChangeBySymbol.get(symbol) ?? null);
     sectorResults.push(sectorInfo);
 
     await sleep(300); // Rate limit for Screener.in
