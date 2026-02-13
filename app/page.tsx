@@ -9,6 +9,18 @@ type SectorStock = {
   category: string | null;
   name: string | null;
   dailyChangePct: number | null;
+  hasRiskWarning: boolean;
+  warningReasons?: string[];
+  warningSignals?: WarningSignal[];
+};
+
+type WarningSignal = {
+  id: string;
+  category: "structure" | "news" | "regulatory";
+  reason: string;
+  details: string;
+  sourceUrl: string | null;
+  sourceLabel: string | null;
 };
 
 type FetchResponse = {
@@ -34,6 +46,37 @@ type Progress = {
   total: number;
 };
 
+const THEME_OPTIONS = [
+  { id: "classic", label: "Classic" },
+  { id: "dark", label: "Dark" },
+  { id: "harry-potter", label: "Harry Potter" },
+  { id: "dune", label: "Dune" },
+  { id: "blade-runner-2049", label: "Blade Runner 2049" },
+  { id: "mad-max-fury-road", label: "Mad Max: Fury Road" },
+  { id: "tron-legacy", label: "Tron: Legacy" },
+  { id: "the-matrix", label: "The Matrix" },
+  { id: "interstellar", label: "Interstellar" },
+  { id: "the-great-gatsby", label: "The Great Gatsby" },
+  { id: "dracula", label: "Dracula" },
+  { id: "moby-dick", label: "Moby Dick" },
+  { id: "lotr-mordor", label: "LOTR: Mordor" },
+  { id: "kill-bill", label: "Kill Bill" },
+  { id: "star-wars-holocron", label: "Star Wars: Holocron" },
+  { id: "barbie-dreamhouse", label: "Barbie Dreamhouse" },
+  { id: "looney-tunes", label: "Looney Tunes" },
+  { id: "rick-and-morty", label: "Rick and Morty" },
+  { id: "adventure-time", label: "Adventure Time" },
+  { id: "spongebob-lagoon", label: "SpongeBob Lagoon" },
+  { id: "pokemon-kanto", label: "Pokemon Kanto" },
+  { id: "akira-neotokyo", label: "Akira Neo-Tokyo" },
+  { id: "ghibli-sky", label: "Ghibli Sky Kingdom" },
+  { id: "neverworld-chaos", label: "Neverworld Chaos" },
+] as const;
+
+type ThemeId = (typeof THEME_OPTIONS)[number]["id"];
+
+const THEME_STORAGE_KEY = "screener-theme";
+
 export default function HomePage() {
   const [data, setData] = useState<FetchResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -43,7 +86,9 @@ export default function HomePage() {
   const [progress, setProgress] = useState<Progress | null>(null);
   const [selectedGroup, setSelectedGroup] = useState("all");
   const [selectedIndustry, setSelectedIndustry] = useState("all");
+  const [selectedWarningFilter, setSelectedWarningFilter] = useState<"all" | "warning" | "clean">("all");
   const [changeSortDirection, setChangeSortDirection] = useState<"none" | "desc" | "asc">("none");
+  const [selectedTheme, setSelectedTheme] = useState<ThemeId>("classic");
 
   const filteredStocks = data?.filtered?.stocks || [];
 
@@ -73,7 +118,12 @@ export default function HomePage() {
     let stocks = filteredStocks.filter((stock) => {
       const matchesGroup = selectedGroup === "all" || stock.sector === selectedGroup;
       const matchesIndustry = selectedIndustry === "all" || stock.industry === selectedIndustry;
-      return matchesGroup && matchesIndustry;
+      const matchesWarning =
+        selectedWarningFilter === "all" ||
+        (selectedWarningFilter === "warning" && stock.hasRiskWarning) ||
+        (selectedWarningFilter === "clean" && !stock.hasRiskWarning);
+
+      return matchesGroup && matchesIndustry && matchesWarning;
     });
 
     if (changeSortDirection !== "none") {
@@ -90,13 +140,30 @@ export default function HomePage() {
     }
 
     return stocks;
-  }, [filteredStocks, selectedGroup, selectedIndustry, changeSortDirection]);
+  }, [filteredStocks, selectedGroup, selectedIndustry, selectedWarningFilter, changeSortDirection]);
 
   useEffect(() => {
     setSelectedGroup("all");
     setSelectedIndustry("all");
+    setSelectedWarningFilter("all");
     setChangeSortDirection("none");
   }, [data?.filtered?.stocks]);
+
+  useEffect(() => {
+    const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (!storedTheme) {
+      return;
+    }
+
+    const isKnownTheme = THEME_OPTIONS.some((option) => option.id === storedTheme);
+    if (isKnownTheme) {
+      setSelectedTheme(storedTheme as ThemeId);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, selectedTheme);
+  }, [selectedTheme]);
 
   const formatPctChange = (value: number | null) => {
     if (value === null) {
@@ -117,6 +184,25 @@ export default function HomePage() {
       return "text-rose-600";
     }
     return "text-slate-600";
+  };
+
+  const getWarningSignals = (stock: SectorStock): WarningSignal[] => {
+    if (stock.warningSignals && stock.warningSignals.length > 0) {
+      return stock.warningSignals;
+    }
+
+    if (stock.warningReasons && stock.warningReasons.length > 0) {
+      return stock.warningReasons.map((reason, index) => ({
+        id: `legacy-${stock.symbol}-${index}`,
+        category: "structure",
+        reason,
+        details: reason,
+        sourceUrl: null,
+        sourceLabel: null,
+      }));
+    }
+
+    return [];
   };
 
   const handleFetch = async () => {
@@ -178,8 +264,26 @@ export default function HomePage() {
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center px-4 py-12">
-      <div className="w-full max-w-5xl rounded-2xl bg-white p-8 shadow-xl">
+    <main data-theme={selectedTheme} className="theme-shell flex min-h-screen items-center justify-center px-4 py-12">
+      <div className="w-full max-w-5xl">
+        <div className="mb-4 flex justify-end">
+          <label className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm">
+            <span className="font-medium">Theme</span>
+            <select
+              value={selectedTheme}
+              onChange={(e) => setSelectedTheme(e.target.value as ThemeId)}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-sm text-slate-700 focus:border-indigo-400 focus:outline-none"
+            >
+              {THEME_OPTIONS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="theme-card w-full rounded-2xl bg-white p-8 shadow-xl">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <h1 className="text-2xl font-semibold text-slate-900">
@@ -189,7 +293,7 @@ export default function HomePage() {
               Fetch symbols from Screener and get TradingView-ready strings.
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
               <input
                 type="checkbox"
@@ -346,13 +450,54 @@ export default function HomePage() {
                           ))}
                         </select>
                       </label>
+                      <div className="flex items-center gap-1 text-sm text-slate-700">
+                        <span className="font-medium">Warning</span>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedWarningFilter("all")}
+                          className={`rounded-md border px-2 py-1 text-xs font-medium ${
+                            selectedWarningFilter === "all"
+                              ? "border-indigo-500 bg-indigo-50 text-indigo-700"
+                              : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                          }`}
+                        >
+                          All
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedWarningFilter("warning")}
+                          className={`rounded-md border px-2 py-1 text-xs font-medium ${
+                            selectedWarningFilter === "warning"
+                              ? "border-amber-500 bg-amber-50 text-amber-700"
+                              : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                          }`}
+                        >
+                          Warning Only
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedWarningFilter("clean")}
+                          className={`rounded-md border px-2 py-1 text-xs font-medium ${
+                            selectedWarningFilter === "clean"
+                              ? "border-emerald-500 bg-emerald-50 text-emerald-700"
+                              : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                          }`}
+                        >
+                          Clean Only
+                        </button>
+                      </div>
                       <button
                         type="button"
                         onClick={() => {
                           setSelectedGroup("all");
                           setSelectedIndustry("all");
+                          setSelectedWarningFilter("all");
                         }}
-                        disabled={selectedGroup === "all" && selectedIndustry === "all"}
+                        disabled={
+                          selectedGroup === "all" &&
+                          selectedIndustry === "all" &&
+                          selectedWarningFilter === "all"
+                        }
                         className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Clear Filters
@@ -402,25 +547,86 @@ export default function HomePage() {
                         </thead>
                         <tbody className="divide-y divide-slate-100 bg-white">
                           {displayedFilteredStocks.length > 0 ? (
-                            displayedFilteredStocks.map((stock, index) => (
-                              <tr key={`${stock.symbol}-${index}`} className="hover:bg-slate-50">
-                                <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-indigo-600">
-                                  {stock.symbol}
-                                </td>
-                                <td className="px-4 py-3 text-sm text-slate-700">
-                                  {stock.name || "-"}
-                                </td>
-                                <td className={`whitespace-nowrap px-4 py-3 text-sm font-medium ${getPctChangeColor(stock.dailyChangePct)}`}>
-                                  {formatPctChange(stock.dailyChangePct)}
-                                </td>
-                                <td className="px-4 py-3 text-sm text-slate-500">
-                                  {stock.sector || "-"}
-                                </td>
-                                <td className="px-4 py-3 text-sm text-slate-500">
-                                  {stock.industry || "-"}
-                                </td>
-                              </tr>
-                            ))
+                            displayedFilteredStocks.map((stock, index) => {
+                              const stockSignals = getWarningSignals(stock);
+
+                              return (
+                                <tr key={`${stock.symbol}-${index}`} className="hover:bg-slate-50">
+                                  <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-indigo-600">
+                                    {stock.symbol}
+                                  </td>
+                                  <td className="px-4 py-3 text-sm text-slate-700">
+                                    <div className="inline-flex items-center gap-1.5">
+                                      <span>{stock.name || "-"}</span>
+                                      {stock.hasRiskWarning && stockSignals.length > 0 && (
+                                        <span className="group/warn relative inline-flex items-center">
+                                          <span
+                                            className="inline-flex h-4 w-4 cursor-help items-center justify-center text-amber-600"
+                                            aria-label="Risk warning details"
+                                          >
+                                            <svg
+                                              viewBox="0 0 20 20"
+                                              fill="currentColor"
+                                              className="h-4 w-4"
+                                              aria-hidden="true"
+                                            >
+                                              <path
+                                                fillRule="evenodd"
+                                                d="M8.7 2.05a1.5 1.5 0 0 1 2.6 0l6.13 10.91A1.5 1.5 0 0 1 16.13 15H3.87a1.5 1.5 0 0 1-1.3-2.04L8.7 2.05Zm1.3 4.2a.75.75 0 0 0-.75.75v3.5a.75.75 0 0 0 1.5 0V7a.75.75 0 0 0-.75-.75Zm0 8a.9.9 0 1 0 0-1.8.9.9 0 0 0 0 1.8Z"
+                                                clipRule="evenodd"
+                                              />
+                                            </svg>
+                                          </span>
+                                          <div className="pointer-events-none invisible absolute left-5 top-1/2 z-30 w-[26rem] -translate-y-1/2 rounded-lg border border-amber-200 bg-white p-3 text-left opacity-0 shadow-xl transition group-hover/warn:visible group-hover/warn:pointer-events-auto group-hover/warn:opacity-100">
+                                            <p className="mb-2 text-xs font-semibold text-slate-800">
+                                              Warning Signals
+                                            </p>
+                                            <div className="space-y-2">
+                                              {stockSignals.map((signal, signalIndex) => (
+                                                <div
+                                                  key={`${signal.id}-${signalIndex}`}
+                                                  className="border-t border-slate-200 pt-2 first:border-t-0 first:pt-0"
+                                                >
+                                                  <p className="text-xs font-medium text-slate-800">
+                                                    {signal.reason}
+                                                  </p>
+                                                  <p className="mt-1 text-[11px] leading-snug text-slate-600">
+                                                    {signal.details}
+                                                  </p>
+                                                  {signal.sourceUrl ? (
+                                                    <a
+                                                      href={signal.sourceUrl}
+                                                      target="_blank"
+                                                      rel="noreferrer noopener"
+                                                      className="mt-1 inline-block text-[11px] font-medium text-indigo-600 hover:text-indigo-700"
+                                                    >
+                                                      {signal.sourceLabel || "Source"}
+                                                    </a>
+                                                  ) : (
+                                                    <span className="mt-1 inline-block text-[11px] text-slate-500">
+                                                      Source: Pattern derived from market structure
+                                                    </span>
+                                                  )}
+                                                </div>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        </span>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td className={`whitespace-nowrap px-4 py-3 text-sm font-medium ${getPctChangeColor(stock.dailyChangePct)}`}>
+                                    {formatPctChange(stock.dailyChangePct)}
+                                  </td>
+                                  <td className="px-4 py-3 text-sm text-slate-500">
+                                    {stock.sector || "-"}
+                                  </td>
+                                  <td className="px-4 py-3 text-sm text-slate-500">
+                                    {stock.industry || "-"}
+                                  </td>
+                                </tr>
+                              );
+                            })
                           ) : (
                             <tr>
                               <td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-500">
@@ -468,119 +674,9 @@ export default function HomePage() {
               </div>
             )}
 
-            {data.sectorFiltered && data.sectorFiltered.stocks.length > 0 && (
-              <div className="mt-8 space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <span className="text-lg font-semibold text-slate-900">
-                      Step 2: Sector Filtered Stocks
-                    </span>
-                    <span className="rounded-full bg-amber-50 px-3 py-1 text-xs text-amber-700">
-                      {data.sectorFiltered.total} stocks
-                    </span>
-                  </div>
-                  <button
-                    onClick={async () => {
-                      const allSymbols = data.sectorFiltered!.stocks
-                        .map((s) => `NSE:${s.symbol}`)
-                        .join(",");
-                      await navigator.clipboard.writeText(allSymbols);
-                      setCopiedIndex(2000);
-                      setTimeout(() => setCopiedIndex(null), 1500);
-                    }}
-                    className="text-xs font-semibold text-indigo-600 hover:text-indigo-700"
-                  >
-                    {copiedIndex === 2000 ? "Copied All" : "Copy All Symbols"}
-                  </button>
-                </div>
-                <p className="text-xs text-slate-500">
-                  Filtered by: Metals, Defense, PSU Banks, Auto, Capital Markets
-                </p>
-                <div className="overflow-x-auto rounded-lg border border-slate-200">
-                  <table className="min-w-full divide-y divide-slate-200">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600">
-                          Symbol
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600">
-                          Name
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600">
-                          Category
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600">
-                          Industry
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {data.sectorFiltered.stocks.map((stock, index) => (
-                        <tr key={index} className="hover:bg-slate-50">
-                          <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-indigo-600">
-                            {stock.symbol}
-                          </td>
-                          <td className="px-4 py-3 text-sm text-slate-700">
-                            {stock.name || "-"}
-                          </td>
-                          <td className="whitespace-nowrap px-4 py-3">
-                            <span className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${
-                              stock.category === "Metals" ? "bg-zinc-100 text-zinc-700" :
-                              stock.category === "Defense" ? "bg-red-100 text-red-700" :
-                              stock.category === "PSU Banks" ? "bg-blue-100 text-blue-700" :
-                              stock.category === "Auto" ? "bg-green-100 text-green-700" :
-                              stock.category === "Capital Markets" ? "bg-purple-100 text-purple-700" :
-                              "bg-slate-100 text-slate-700"
-                            }`}>
-                              {stock.category || "-"}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 text-sm text-slate-500">
-                            {stock.industry || "-"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                {data.sectorFiltered.batches.length > 0 && (
-                  <div className="mt-4 grid gap-6 md:grid-cols-2">
-                    {data.sectorFiltered.batches.map((batch, index) => (
-                      <div key={index} className="flex flex-col gap-2">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-3">
-                            <span className="text-sm font-medium text-slate-800">
-                              Sector Batch {index + 1}
-                            </span>
-                            <span className="text-xs text-slate-500">
-                              {batch.split(",").length} symbols
-                            </span>
-                          </div>
-                          <button
-                            onClick={async () => {
-                              await navigator.clipboard.writeText(batch);
-                              setCopiedIndex(index + 3000);
-                              setTimeout(() => setCopiedIndex(null), 1500);
-                            }}
-                            className="text-xs font-semibold text-indigo-600 hover:text-indigo-700"
-                          >
-                            {copiedIndex === index + 3000 ? "Copied" : "Copy"}
-                          </button>
-                        </div>
-                        <textarea
-                          readOnly
-                          value={batch}
-                          className="min-h-[100px] rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:border-indigo-400 focus:outline-none"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         )}
+        </div>
       </div>
     </main>
   );
